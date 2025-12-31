@@ -10,25 +10,31 @@ export class PacketHandler {
     this.serverPeerId = 10000001; // VNT 服务器节点 ID    
   }    
   
-  async handle(context, packet, addr, tcpSender) {    
-    try {    
-      // 检查是否为网关包    
-      if (packet.is_gateway()) {    
-        return await this.handleServerPacket(context, packet, addr, tcpSender);    
-      } else {    
-        return await this.handleClientPacket(context, packet, addr);    
-      }    
-    } catch (error) {    
-      console.error('Packet handling error:', error);    
-      return this.createErrorPacket(addr, packet.source, error.message);    
-    }    
-  }    
+  async handle(context, packet, addr, tcpSender) {  
+  try {  
+    console.log(`[DEBUG] Packet routing: protocol=${packet.protocol}, transport=${packet.transportProtocol}, is_gateway=${packet.is_gateway()}`);  
+      
+    // 检查是否为网关包  
+    if (packet.is_gateway()) {  
+      console.log(`[DEBUG] Routing to handleServerPacket`);  
+      return await this.handleServerPacket(context, packet, addr, tcpSender);  
+    } else {  
+      console.log(`[DEBUG] Routing to handleClientPacket`);  
+      return await this.handleClientPacket(context, packet, addr);  
+    }  
+  } catch (error) {  
+    console.error('Packet handling error:', error);  
+    return this.createErrorPacket(addr, packet.source, error.message);  
+  }  
+}  
   
-  async handleServerPacket(context, packet, addr, tcpSender) {    
+  async handleServerPacket(context, packet, addr, tcpSender) {
+  	console.log(`[DEBUG] handleServerPacket: protocol=${packet.protocol}, transport=${packet.transportProtocol}`);  
     const source = packet.source;    
   
     // 处理服务协议 - 握手请求直接处理    
-    if (packet.protocol === PROTOCOL.SERVICE) {    
+    if (packet.protocol === PROTOCOL.SERVICE) {
+    	console.log(`[DEBUG] SERVICE protocol detected, checking transport=${packet.transportProtocol}`); 
       switch (packet.transportProtocol) {    
         case TRANSPORT_PROTOCOL.HandshakeRequest:    
           return await this.handleHandshake(packet, addr);    
@@ -109,20 +115,29 @@ export class PacketHandler {
     return this.createErrorPacket(addr, packet.source, 'No context');    
   }    
   
-  async handleHandshake(packet, addr) {    
-    try {    
-      const payload = packet.payload();    
-      const handshakeReq = this.parseHandshakeRequest(payload);    
-          
-      console.log(`Handshake from ${addr}:`, handshakeReq);    
-          
-      const response = this.createHandshakeResponse(handshakeReq);    
-      return response;    
-    } catch (error) {    
-      console.error('Handshake error:', error);    
-      return this.createErrorPacket(addr, packet.source, 'Handshake failed');    
-    }    
-  }    
+  async handleHandshake(packet, addr) {  
+  try {  
+    console.log(`[DEBUG] === HANDSHAKE START ===`);  
+      
+    const payload = packet.payload();  
+    console.log(`[DEBUG] Handshake payload length: ${payload.length}`);  
+    console.log(`[DEBUG] Handshake payload hex: ${Array.from(payload).map(b => b.toString(16).padStart(2, '0')).join('')}`);  
+      
+    const handshakeReq = this.parseHandshakeRequest(payload);  
+    console.log(`[DEBUG] Parsed handshake request:`, handshakeReq);  
+      
+    const response = this.createHandshakeResponse(handshakeReq);  
+    console.log(`[DEBUG] Created handshake response, length: ${response.buffer().length}`);  
+    console.log(`[DEBUG] Response hex: ${Array.from(response.buffer()).map(b => b.toString(16).padStart(2, '0')).join('')}`);  
+      
+    console.log(`[DEBUG] === HANDSHAKE END ===`);  
+    return response;  
+  } catch (error) {  
+    console.error('[DEBUG] Handshake error:', error);  
+    console.error('[DEBUG] Handshake error stack:', error.stack);  
+    return this.createErrorPacket(addr, packet.source, 'Handshake failed');  
+  }  
+}    
   
   async handleSecretHandshake(context, packet, addr) {    
     console.log(`Secret handshake from ${addr}`);    
@@ -255,14 +270,39 @@ export class PacketHandler {
   }    
   
   async handleClientPacket(context, packet, addr) {  
-  // 客户端包处理 - 主要是转发  
   if (!context.link_context) {  
-    console.log('Client packet received without context, expecting handshake/registration first');  
-    throw new Error('No link context for client packet - please complete handshake and registration first');  
+    // 处理已知协议  
+    if (packet.protocol === PROTOCOL.SERVICE) {  
+      switch (packet.transportProtocol) {  
+        case TRANSPORT_PROTOCOL.HandshakeRequest:  
+          return await this.handleHandshake(packet, addr);  
+        case TRANSPORT_PROTOCOL.RegistrationRequest:  
+          return await this.handleRegistration(context, packet, addr, null);  
+        default:  
+          break;  
+      }  
+    } else if (packet.protocol === PROTOCOL.CONTROL) {  
+      if (packet.transportProtocol === TRANSPORT_PROTOCOL.AddrRequest) {  
+        return this.handleAddrRequest(addr);  
+      }  
+    }  
+      
+    // 对未知包发送握手响应，引导客户端  
+    const response = this.createHandshakeResponse({  
+      version: "1.0.0",  
+      secret: false,  
+      key_finger: ""  
+    });  
+      
+    // 设置响应的目标地址  
+    response.set_destination(packet.source);  
+    response.set_source(this.serverPeerId);  
+      
+    return response;  
   }  
       
   return await this.forwardPacket(context.link_context, packet);  
-}   
+}
   
   async forwardPacket(linkContext, packet) {    
     const destination = packet.destination;    

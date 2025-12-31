@@ -14,8 +14,8 @@ MAX_CONNECTIONS_PER_ROOM = "100"
 HEARTBEAT_INTERVAL = "30"  
   
 # 调试设置  
-DEBUG_MODE = "0"  
-LOG_LEVEL = "info"  
+DEBUG_MODE = "1"  
+LOG_LEVEL = "debug"  
   
 [[durable_objects.bindings]]  
 name = "RELAY_ROOM"  

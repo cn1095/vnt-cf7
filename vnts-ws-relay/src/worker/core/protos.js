@@ -1,63 +1,124 @@
-import root from './protos_generated.js';  
+import {  
+  encodeHandshakeRequest,  
+  decodeHandshakeRequest,  
+  encodeHandshakeResponse,  
+  decodeHandshakeResponse,  
+  encodeSecretHandshakeRequest,  
+  decodeSecretHandshakeRequest,  
+  encodeRegistrationRequest,  
+  decodeRegistrationRequest,  
+  encodeRegistrationResponse,  
+  decodeRegistrationResponse,  
+  encodeDeviceInfo,  
+  decodeDeviceInfo,  
+  encodeDeviceList,  
+  decodeDeviceList,  
+  encodePunchInfo,  
+  decodePunchInfo,  
+  encodeClientStatusInfo,  
+  decodeClientStatusInfo,  
+  encodeRouteItem,  
+  decodeRouteItem,  
+  encodePunchNatType,  
+  decodePunchNatType,  
+  encodePunchNatModel,  
+  decodePunchNatModel  
+} from './protos_generated.js';  
   
 let cachedTypes;  
   
 export function loadProtos() {  
   if (cachedTypes) return cachedTypes;  
     
+  // 创建兼容的消息对象结构  
   return cachedTypes = {  
-    root,  
-    // VNT 消息类型  
-    HandshakeRequest: root.message.HandshakeRequest,  
-    HandshakeResponse: root.message.HandshakeResponse,  
-    SecretHandshakeRequest: root.message.SecretHandshakeRequest,  
-    RegistrationRequest: root.message.RegistrationRequest,  
-    RegistrationResponse: root.message.RegistrationResponse,  
-    DeviceInfo: root.message.DeviceInfo,  
-    DeviceList: root.message.DeviceList,  
-    PunchInfo: root.message.PunchInfo,  
-    ClientStatusInfo: root.message.ClientStatusInfo,  
-    RouteItem: root.message.RouteItem,  
-      
+    // 消息类型 - 提供创建、编码、解码方法  
+    HandshakeRequest: {  
+      create: (data) => data || {},  
+      encode: encodeHandshakeRequest,  
+      decode: decodeHandshakeRequest  
+    },  
+    HandshakeResponse: {  
+      create: (data) => data || {},  
+      encode: encodeHandshakeResponse,  
+      decode: decodeHandshakeResponse  
+    },  
+    SecretHandshakeRequest: {  
+      create: (data) => data || {},  
+      encode: encodeSecretHandshakeRequest,  
+      decode: decodeSecretHandshakeRequest  
+    },  
+    RegistrationRequest: {  
+      create: (data) => data || {},  
+      encode: encodeRegistrationRequest,  
+      decode: decodeRegistrationRequest  
+    },  
+    RegistrationResponse: {  
+      create: (data) => data || {},  
+      encode: encodeRegistrationResponse,  
+      decode: decodeRegistrationResponse  
+    },  
+    DeviceInfo: {  
+      create: (data) => data || {},  
+      encode: encodeDeviceInfo,  
+      decode: decodeDeviceInfo  
+    },  
+    DeviceList: {  
+      create: (data) => data || {},  
+      encode: encodeDeviceList,  
+      decode: decodeDeviceList  
+    },  
+    PunchInfo: {  
+      create: (data) => data || {},  
+      encode: encodePunchInfo,  
+      decode: decodePunchInfo  
+    },  
+    ClientStatusInfo: {  
+      create: (data) => data || {},  
+      encode: encodeClientStatusInfo,  
+      decode: decodeClientStatusInfo  
+    },  
+    RouteItem: {  
+      create: (data) => data || {},  
+      encode: encodeRouteItem,  
+      decode: decodeRouteItem  
+    },  
     // 枚举类型  
-    PunchNatType: root.message.PunchNatType,  
-    PunchNatModel: root.message.PunchNatModel,  
+    PunchNatType: encodePunchNatType,  
+    PunchNatModel: encodePunchNatModel,  
   };  
 }  
   
+// 创建函数 - 直接使用编码函数  
 export function createHandshakeRequest(version, secret, keyFinger) {  
-  const types = loadProtos();  
-  const request = types.HandshakeRequest.create({  
+  const message = {  
     version: version || "1.0.0",  
     secret: secret || false,  
     key_finger: keyFinger || ""  
-  });  
-  return types.HandshakeRequest.encode(request).finish();  
+  };  
+  return encodeHandshakeRequest(message);  
 }  
   
 export function createHandshakeResponse(version, secret, publicKey, keyFinger) {  
-  const types = loadProtos();  
-  const response = types.HandshakeResponse.create({  
+  const message = {  
     version: version || "1.0.0",  
     secret: secret || false,  
     public_key: publicKey || new Uint8Array(0),  
     key_finger: keyFinger || ""  
-  });  
-  return types.HandshakeResponse.encode(response).finish();  
+  };  
+  return encodeHandshakeResponse(message);  
 }  
   
 export function createSecretHandshakeRequest(token, key) {  
-  const types = loadProtos();  
-  const request = types.SecretHandshakeRequest.create({  
+  const message = {  
     token: token || "",  
     key: key || new Uint8Array(0)  
-  });  
-  return types.SecretHandshakeRequest.encode(request).finish();  
+  };  
+  return encodeSecretHandshakeRequest(message);  
 }  
   
 export function createRegistrationRequest(token, deviceId, name, version, virtualIp, clientSecretHash) {  
-  const types = loadProtos();  
-  const request = types.RegistrationRequest.create({  
+  const message = {  
     token: token || "default",  
     device_id: deviceId || "",  
     name: name || "client",  
@@ -67,13 +128,12 @@ export function createRegistrationRequest(token, deviceId, name, version, virtua
     allow_ip_change: false,  
     client_secret: false,  
     client_secret_hash: clientSecretHash || new Uint8Array(0)  
-  });  
-  return types.RegistrationRequest.encode(request).finish();  
+  };  
+  return encodeRegistrationRequest(message);  
 }  
   
 export function createRegistrationResponse(virtualIp, gateway, netmask, epoch, deviceInfoList, publicIp, publicPort) {  
-  const types = loadProtos();  
-  const response = types.RegistrationResponse.create({  
+  const message = {  
     virtual_ip: virtualIp || 0,  
     virtual_gateway: gateway || 0,  
     virtual_netmask: netmask || 0,  
@@ -82,120 +142,97 @@ export function createRegistrationResponse(virtualIp, gateway, netmask, epoch, d
     public_ip: publicIp || 0,  
     public_port: publicPort || 0,  
     public_ipv6: new Uint8Array(0)  
-  });  
-  return types.RegistrationResponse.encode(response).finish();  
+  };  
+  return encodeRegistrationResponse(message);  
 }  
   
 export function createDeviceInfo(name, virtualIp, deviceStatus, clientSecret, clientSecretHash, wireguard) {  
-  const types = loadProtos();  
-  const deviceInfo = types.DeviceInfo.create({  
+  const message = {  
     name: name || "",  
     virtual_ip: virtualIp || 0,  
     device_status: deviceStatus || 0,  
     client_secret: clientSecret || false,  
     client_secret_hash: clientSecretHash || new Uint8Array(0),  
     wireguard: wireguard || false  
-  });  
-  return types.DeviceInfo.encode(deviceInfo).finish();  
+  };  
+  return encodeDeviceInfo(message);  
 }  
   
 export function createDeviceList(epoch, deviceInfoList) {  
-  const types = loadProtos();  
-  const deviceList = types.DeviceList.create({  
+  const message = {  
     epoch: epoch || 0,  
     device_info_list: deviceInfoList || []  
-  });  
-  return types.DeviceList.encode(deviceList).finish();  
+  };  
+  return encodeDeviceList(message);  
 }  
   
-export function createPunchInfo(publicIpList, publicPort, portRange, natType, reply, localIp, localPort, ipv6, ipv6Port, tcpPort, udpPorts, publicPorts, publicTcpPort, punchModel) {  
-  const types = loadProtos();  
-  const punchInfo = types.PunchInfo.create({  
+export function createPunchInfo(publicIpList, publicPort, publicPortRange, natType, reply, localIp) {  
+  const message = {  
     public_ip_list: publicIpList || [],  
     public_port: publicPort || 0,  
-    public_port_range: portRange || 0,  
-    nat_type: natType || types.PunchNatType.Symmetric,  
+    public_port_range: publicPortRange || 0,  
+    nat_type: natType || 0,  
     reply: reply || false,  
-    local_ip: localIp || 0,  
-    local_port: localPort || 0,  
-    ipv6: ipv6 || new Uint8Array(0),  
-    ipv6_port: ipv6Port || 0,  
-    tcp_port: tcpPort || 0,  
-    udp_ports: udpPorts || [],  
-    public_ports: publicPorts || [],  
-    public_tcp_port: publicTcpPort || 0,  
-    punch_model: punchModel || types.PunchNatModel.All  
-  });  
-  return types.PunchInfo.encode(punchInfo).finish();  
+    local_ip: localIp || 0  
+  };  
+  return encodePunchInfo(message);  
 }  
   
 export function createClientStatusInfo(source, p2pList, upStream, downStream, natType) {  
-  const types = loadProtos();  
-  const clientStatusInfo = types.ClientStatusInfo.create({  
+  const message = {  
     source: source || 0,  
     p2p_list: p2pList || [],  
     up_stream: upStream || 0,  
     down_stream: downStream || 0,  
-    nat_type: natType || types.PunchNatType.Symmetric  
-  });  
-  return types.ClientStatusInfo.encode(clientStatusInfo).finish();  
+    nat_type: natType || 0  
+  };  
+  return encodeClientStatusInfo(message);  
 }  
   
 export function createRouteItem(nextIp) {  
-  const types = loadProtos();  
-  const routeItem = types.RouteItem.create({  
+  const message = {  
     next_ip: nextIp || 0  
-  });  
-  return types.RouteItem.encode(routeItem).finish();  
+  };  
+  return encodeRouteItem(message);  
 }  
   
-// 解析函数  
+// 解析函数 - 直接使用解码函数  
 export function parseHandshakeRequest(data) {  
-  const types = loadProtos();  
-  return types.HandshakeRequest.decode(data);  
+  return decodeHandshakeRequest(data);  
 }  
   
 export function parseHandshakeResponse(data) {  
-  const types = loadProtos();  
-  return types.HandshakeResponse.decode(data);  
+  return decodeHandshakeResponse(data);  
 }  
   
 export function parseSecretHandshakeRequest(data) {  
-  const types = loadProtos();  
-  return types.SecretHandshakeRequest.decode(data);  
+  return decodeSecretHandshakeRequest(data);  
 }  
   
 export function parseRegistrationRequest(data) {  
-  const types = loadProtos();  
-  return types.RegistrationRequest.decode(data);  
+  return decodeRegistrationRequest(data);  
 }  
   
 export function parseRegistrationResponse(data) {  
-  const types = loadProtos();  
-  return types.RegistrationResponse.decode(data);  
+  return decodeRegistrationResponse(data);  
 }  
   
 export function parseDeviceInfo(data) {  
-  const types = loadProtos();  
-  return types.DeviceInfo.decode(data);  
+  return decodeDeviceInfo(data);  
 }  
   
 export function parseDeviceList(data) {  
-  const types = loadProtos();  
-  return types.DeviceList.decode(data);  
+  return decodeDeviceList(data);  
 }  
   
 export function parsePunchInfo(data) {  
-  const types = loadProtos();  
-  return types.PunchInfo.decode(data);  
+  return decodePunchInfo(data);  
 }  
   
 export function parseClientStatusInfo(data) {  
-  const types = loadProtos();  
-  return types.ClientStatusInfo.decode(data);  
+  return decodeClientStatusInfo(data);  
 }  
   
 export function parseRouteItem(data) {  
-  const types = loadProtos();  
-  return types.RouteItem.decode(data);  
+  return decodeRouteItem(data);  
 }

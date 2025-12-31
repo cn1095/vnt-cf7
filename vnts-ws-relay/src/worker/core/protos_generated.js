@@ -1,3 +1,4 @@
+var $root = {};
 export const encodePunchNatType = {
   Symmetric: 0,
   Cone: 1,
@@ -1582,4 +1583,5 @@ function writeVarint64ZigZag(bb, value) {
     unsigned: false,
   });
 }
+
 export default $root;

@@ -7,12 +7,12 @@ export const PROTOCOL = {
   
 export const TRANSPORT_PROTOCOL = {  
   // Service 协议  
-  HandshakeRequest: 0,  
-  HandshakeResponse: 1,  
-  SecretHandshakeRequest: 2,  
-  SecretHandshakeResponse: 3,  
-  RegistrationRequest: 4,  
-  RegistrationResponse: 5,  
+  HandshakeRequest: 5,  
+  HandshakeResponse: 6,  
+  SecretHandshakeRequest: 7,  
+  SecretHandshakeResponse: 8,  
+  RegistrationRequest: 1,  
+  RegistrationResponse: 2,  
     
   // Control 协议  
   Ping: 0,  
