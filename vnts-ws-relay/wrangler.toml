@@ -8,7 +8,6 @@ WS_PATH = "ws"
   
 # VNT 特定配置  
 VNT_DISABLE_RELAY = "0"  
-VNT_COMPRESS_RPC = "1"  
   
 # 网络配置  
 NETWORK_NAME = "default"  
