@@ -450,17 +450,20 @@ calculateClientAddress(source) {
   createRegistrationResponse(virtualIp, networkInfo) {      
   const responseData = {      
     virtual_ip: virtualIp,      
-    gateway: networkInfo.gateway,      
-    netmask: networkInfo.netmask,      
+    virtual_gateway: networkInfo.gateway,      
+    virtual_netmask: networkInfo.netmask,      
     epoch: networkInfo.epoch,      
-    device_info_list: Array.from(networkInfo.clients.values()).map(client => ({      
-      virtual_ip: client.virtual_ip,      
-      device_id: client.device_id,      
-      name: client.name,      
-      online: client.online      
+    device_info_list: Array.from(networkInfo.clients.values()).map(client => ({        
+      name: client.name,                        // ✅ 添加 name 字段  
+      virtual_ip: client.virtual_ip,        
+      device_status: client.online ? 1 : 0,     // ✅ 添加 device_status  
+      client_secret: false,                    // ✅ 添加 client_secret  
+      client_secret_hash: new Uint8Array(0),   // ✅ 添加 client_secret_hash  
+      wireguard: false                         // ✅ 添加 wireguard  
     })),      
     public_ip: networkInfo.public_ip,      
-    public_port: networkInfo.public_port      
+    public_port: networkInfo.public_port,
+    public_ipv6: new Uint8Array(0)      
   };      
         
   const responseBytes = this.encodeRegistrationResponse(responseData);      
@@ -472,8 +475,9 @@ calculateClientAddress(source) {
     
   // 添加这些关键行：  
   response.set_source(networkInfo.gateway);      // 设置源地址为网关  
-  response.set_destination(virtualIp);          // 设置目标地址为客户端  
+  response.set_destination(0xffffffff);          // 设置目标地址为客户端  
   response.set_gateway_flag(true);              // 设置网关标志  
+  response.first_set_ttl(15);
     
   response.set_payload(responseBytes);      
         

@@ -140,7 +140,9 @@ export class RelayRoom {
     const heartbeatId = setInterval(() => {  
       try {  
         console.log(`[调试] 发送心跳包到: ${clientId}`); 
-        server.ping();  
+        if (websocket.readyState === WebSocket.OPEN) {  
+    websocket.ping(); // 或使用 websocket.send() 发送 ping 帧  
+}  
           
         // 检查连接状态  
         const connectionInfo = this.getConnectionInfo(clientId);  
