@@ -630,9 +630,8 @@ this.currentNetworkInfo = networkInfo;
 }
 
   createPongPacket(pingPacket, currentTime) {  
-  // 完全按照 vnts 的方式：12字节头部 + 4字节载荷 + 预留空间  
-  const totalSize = 12 + 4 + ENCRYPTION_RESERVED;  
-  const packet = NetPacket.new_encrypt(totalSize);  
+  // 使用非加密包，避免数据长度问题  
+  const packet = NetPacket.new(4); // 4字节载荷  
     
   // 设置协议头  
   packet.set_protocol(PROTOCOL.CONTROL);  
@@ -640,16 +639,19 @@ this.currentNetworkInfo = networkInfo;
   packet.set_source(pingPacket.destination);  
   packet.set_destination(pingPacket.source);  
     
-  // 关键：直接操作底层 buffer，绕过 set_payload  
-  const buffer = packet.buffer();  
-  const view = new DataView(buffer.buffer, buffer.byteOffset);  
+  // 创建4字节载荷  
+  const payload = new Uint8Array(4);  
+  const view = new DataView(payload.buffer);  
     
-  // 跳过12字节头部，写入4字节载荷  
-  view.setUint16(12, currentTime & 0xffff, false); // 时间戳  
-  view.setUint16(14, this.getCurrentEpoch() & 0xffff, false); // epoch  
+  // 设置时间戳和epoch  
+  view.setUint16(0, currentTime & 0xffff, false); // 时间戳  
+  view.setUint16(2, this.getCurrentEpoch() & 0xffff, false); // epoch  
+    
+  // 设置载荷  
+  packet.set_payload(payload);  
     
   return packet;  
-}  
+}
   
 // 获取当前epoch  
 getCurrentEpoch() {  

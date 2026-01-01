@@ -109,15 +109,11 @@ export class RelayRoom {
       lastActivity: Date.now(),  
       clientId: clientId,  
       isAlive: true  
-    };  
-      
-    // 设置连接超时检测  
-    const timeoutId = setTimeout(() => {  
-      console.log(`[调试] 连接超时，准备关闭: ${clientId}`); 
-      this.handleClose(clientId);  
-    }, this.connectionTimeout);  
-      
-    this.connectionTimeouts.set(clientId, timeoutId);  
+    };
+    
+     // 使用 Map 存储连接信息  
+    this.connectionInfos = this.connectionInfos || new Map();  
+    this.connectionInfos.set(clientId, connectionInfo);
       
     // 启动心跳定时器  
     console.log(`[调试] 启动心跳机制，间隔: ${this.heartbeatInterval/1000}秒`);
@@ -138,45 +134,39 @@ export class RelayRoom {
     if (!server) return;  
       
     const heartbeatId = setInterval(() => {  
-      try {  
-        console.log(`[调试] 发送心跳包到: ${clientId}`); 
-        if (websocket.readyState === WebSocket.OPEN) {  
-    websocket.ping(); // 或使用 websocket.send() 发送 ping 帧  
-}  
-          
-        // 检查连接状态  
-        const connectionInfo = this.getConnectionInfo(clientId);  
-        if (connectionInfo && Date.now() - connectionInfo.lastActivity > this.connectionTimeout) {  
-          console.log(`[调试] 连接 ${clientId} 似乎已死机，准备关闭`);  
-          this.handleClose(clientId);  
+        try {  
+            console.log(`[调试] 检查连接状态: ${clientId}`);  
+              
+            // 只检查WebSocket状态，不检查超时  
+            if (server.readyState !== WebSocket.OPEN) {  
+                console.log(`[调试] 连接已断开，清理: ${clientId}`);  
+                this.handleClose(clientId);  
+                return;  
+            }  
+        } catch (error) {  
+            console.error(`[调试] 心跳检查失败 ${clientId}:`, error);  
+            this.handleClose(clientId);  
         }  
-      } catch (error) {  
-        console.error(`[调试] 心跳失败 ${clientId}:`, error);
-        console.log(`[调试] 由于心跳失败，关闭连接: ${clientId}`);  
-        this.handleClose(clientId);  
-      }  
     }, this.heartbeatInterval);  
       
     this.heartbeatTimers.set(clientId, heartbeatId);  
-  }  
+}  
   
   // 新增：更新最后活动时间  
   updateLastActivity(clientId) {  
     const connectionInfo = this.getConnectionInfo(clientId);  
     if (connectionInfo) {  
-      connectionInfo.lastActivity = Date.now();  
+        connectionInfo.lastActivity = Date.now();  
     }  
-  }  
+}  
   
-  // 新增：获取连接信息  
+  // 获取连接信息  
   getConnectionInfo(clientId) {  
-    // 这里可以扩展为存储更详细的连接信息  
-    return {  
-      lastActivity: Date.now(),  
-      clientId: clientId,  
-      isAlive: true  
-    };  
-  }  
+    if (!this.connectionInfos) {  
+        return null;  
+    }  
+    return this.connectionInfos.get(clientId);  
+} 
   
   async handleMessage(clientId, data) {  
     try {  
@@ -370,46 +360,41 @@ shouldBroadcast(packet) {
     console.log(`[调试] 开始清理连接: ${clientId}`);  
       
     const context = this.contexts.get(clientId);  
-      
     if (context) {  
-      try {  
-        // 清理连接 
-        console.log(`[调试] 清理 ${clientId} 的上下文`);  
-        this.packetHandler.leave(context);  
-      } catch (error) {  
-        console.error(`[调试] 清理 ${clientId} 上下文时出错:`, error);    
-      }  
+        try {  
+            console.log(`[调试] 清理 ${clientId} 的上下文`);  
+            this.packetHandler.leave(context);  
+        } catch (error) {  
+            console.error(`[调试] 清理 ${clientId} 上下文时出错:`, error);  
+        }  
     }  
       
     // 清理心跳定时器  
     const heartbeatId = this.heartbeatTimers.get(clientId);  
     if (heartbeatId) {  
-    console.log(`[调试] 停止 ${clientId} 的心跳定时器`);  
-      clearInterval(heartbeatId);  
-      this.heartbeatTimers.delete(clientId);  
+        console.log(`[调试] 停止 ${clientId} 的心跳定时器`);  
+        clearInterval(heartbeatId);  
+        this.heartbeatTimers.delete(clientId);  
     }  
-      
-    // 清理连接超时定时器  
-    const timeoutId = this.connectionTimeouts.get(clientId);  
-    if (timeoutId) {  
-    console.log(`[调试] 清除 ${clientId} 的超时定时器`);
-      clearTimeout(timeoutId);  
-      this.connectionTimeouts.delete(clientId);  
-    }  
-      
+    
     // 清理连接和上下文  
     this.contexts.delete(clientId);  
     this.connections.delete(clientId);  
-    
+      
+    // 清理连接信息  
+    if (this.connectionInfos) {  
+        this.connectionInfos.delete(clientId);  
+    }  
+      
     // 如果没有活跃连接了，停止健康检查  
-  if (this.connections.size === 0 && this.healthCheckInterval) {  
-    clearInterval(this.healthCheckInterval);  
-    this.healthCheckInterval = null;  
-    console.log(`[调试] 停止健康检查定时器`);  
-  }
+    if (this.connections.size === 0 && this.healthCheckInterval) {  
+        clearInterval(this.healthCheckInterval);  
+        this.healthCheckInterval = null;  
+        console.log(`[调试] 停止健康检查定时器`);  
+    }  
       
     console.log(`[调试] 连接 ${clientId} 清理完成`);  
-  }  
+}  
   
   generateClientId() {  
     return Math.random().toString(36).substr(2, 9);  
@@ -426,36 +411,27 @@ shouldBroadcast(packet) {
   
   // 新增：定期清理死连接（可选）  
   cleanupDeadConnections() {  
-    const now = Date.now();  
-      
     for (const [clientId, server] of this.connections) {  
-      const connectionInfo = this.getConnectionInfo(clientId);  
-        
-      if (connectionInfo && now - connectionInfo.lastActivity > this.connectionTimeout) {  
-        console.log(`[DEBUG] Cleaning up dead connection: ${clientId}`);  
-        this.handleClose(clientId);  
-      }  
+        // 只检查WebSocket状态，不检查超时  
+        if (server.readyState !== WebSocket.OPEN) {  
+            console.log(`[DEBUG] Cleaning up dead connection: ${clientId}`);  
+            this.handleClose(clientId);  
+        }  
     }  
-  }  
+}  
   // 新增：定期检查连接状态  
 checkConnectionHealth() {  
-  const now = Date.now();  
-  console.log(`[调试] 开始健康检查，当前连接数: ${this.connections.size}`);  
-    
-  for (const [clientId, server] of this.connections) {  
-    const connectionInfo = this.getConnectionInfo(clientId);  
+    const now = Date.now();  
+    console.log(`[调试] 开始健康检查，当前连接数: ${this.connections.size}`);  
       
-    if (connectionInfo) {  
-      const inactiveTime = now - connectionInfo.lastActivity;  
-      console.log(`[调试] 连接 ${clientId} 非活跃时间: ${Math.round(inactiveTime/1000)}秒`);  
-        
-      if (inactiveTime > this.connectionTimeout) {  
-        console.log(`[调试] 连接 ${clientId} 超时，准备清理`);  
-        this.handleClose(clientId);  
-      }  
+    for (const [clientId, server] of this.connections) {  
+        // 只检查WebSocket状态，不检查超时  
+        if (server.readyState !== WebSocket.OPEN) {  
+            console.log(`[调试] 连接 ${clientId} 已断开，准备清理`);  
+            this.handleClose(clientId);  
+        }  
     }  
-  }  
-    
-  console.log(`[调试] 健康检查完成`);  
+      
+    console.log(`[调试] 健康检查完成`);  
 }
 }
