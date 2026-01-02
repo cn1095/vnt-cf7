@@ -240,56 +240,61 @@ export class PacketHandler {
   }
 
   // 创建 ping 响应
-  createPingResponse(
-    originalPacket,
-    source,
-    destination,
-    ipv4Packet,
-    icmpPacket
-  ) {
-    // 响应的 ICMP 包
-    const responseIcmp = {
-      type: 0, // Echo Reply
-      code: 0,
-      checksum: 0,
-      identifier: icmpPacket.identifier,
-      sequenceNumber: icmpPacket.sequenceNumber,
-      data: icmpPacket.data,
-    };
-
-    // 计算校验和
-    responseIcmp.checksum = this.calculateIcmpChecksum(responseIcmp);
-
-    // 响应的 IPv4 包
-    const responseIpv4 = {
-      version: 4,
-      headerLength: 5,
-      totalLength: 20 + responseIcmp.data.length,
-      identification: ipv4Packet.identification,
-      flags: 0,
-      fragmentOffset: 0,
-      ttl: 64,
-      protocol: 1, // ICMP
-      headerChecksum: 0,
-      sourceIp: destination,
-      destIp: source,
-      payload: this.serializeIcmpPacket(responseIcmp),
-    };
-
-    // 计算 IPv4 校验和
-    responseIpv4.headerChecksum = this.calculateIpv4Checksum(responseIpv4);
-
-    // 创建 VNT 协议包
-    const responsePacket = this.createVntPacket(
-      PROTOCOL.IPTURN,
-      IP_TURN_TRANSPORT_PROTOCOL.Ipv4,
-      destination, // source becomes destination
-      source, // destination becomes source
-      this.serializeIpv4Packet(responseIpv4)
-    );
-
-    return responsePacket;
-  }
+  createPingResponse(  
+  originalPacket,  
+  source,  
+  destination,  
+  ipv4Packet,  
+  icmpPacket  
+) {  
+  // 响应的 ICMP 包  
+  const responseIcmp = {  
+    type: 0, // Echo Reply  
+    code: 0,  
+    checksum: 0,  
+    identifier: icmpPacket.identifier,  
+    sequenceNumber: icmpPacket.sequenceNumber,  
+    data: icmpPacket.data,  
+  };  
+  
+  // 计算校验和  
+  responseIcmp.checksum = this.calculateIcmpChecksum(responseIcmp);  
+  
+  // 响应的 IPv4 包  
+  const responseIpv4 = {  
+    version: 4,  
+    headerLength: 5,  
+    totalLength: 20 + responseIcmp.data.length,  
+    identification: ipv4Packet.identification,  
+    flags: 0,  
+    fragmentOffset: 0,  
+    ttl: 64, // 标准 TTL 值  
+    protocol: 1, // ICMP  
+    headerChecksum: 0,  
+    sourceIp: destination, // 源和目标交换  
+    destIp: source,  
+    payload: this.serializeIcmpPacket(responseIcmp),  
+  };  
+  
+  // 计算 IPv4 校验和  
+  responseIpv4.headerChecksum = this.calculateIpv4Checksum(responseIpv4);  
+  
+  // 创建 VNT 协议包  
+  const responsePacket = NetPacket.new(20 + responseIcmp.data.length);  
+    
+  // 设置 VNT 包头  
+  responsePacket.set_protocol(PROTOCOL.IPTURN);  
+  responsePacket.set_transport_protocol(IP_TURN_TRANSPORT_PROTOCOL.Ipv4);  
+  responsePacket.set_source(destination); // 网关地址作为源  
+  responsePacket.set_destination(source); // 客户端地址作为目标  
+  responsePacket.set_gateway_flag(true); // 标记为网关包  
+  responsePacket.first_set_ttl(15); // 设置 VNT TTL  
+    
+  // 设置 IPv4 包作为载荷  
+  responsePacket.set_payload(this.serializeIpv4Packet(responseIpv4));  
+  
+  return responsePacket;  
+}
 
   // 转发 IP 包到目标客户端
   async forwardIpPacket(context, packet, destination) {
@@ -621,16 +626,15 @@ export class PacketHandler {
     }
   }
 
-  async handlePing(packet, linkContext) {
-    // 立即处理，不经过队列
-    const currentTime = Date.now() & 0xffff; // 取低16位
-
-    // 创建 Pong 响应
-    const pongPacket = this.createPongPacket(packet, currentTime);
-
-    // 返回响应包，让消息处理循环发送
-    return pongPacket;
-  }
+  async handlePing(packet, linkContext) {  
+    // 读取客户端发送的原始时间戳（不要生成新的）  
+    const payload = packet.payload();  
+    const clientTime = (payload[0] << 8) | payload[1];  
+      
+    // 创建 Pong 响应，保持客户端的时间戳  
+    const pongPacket = this.createPongPacket(packet, clientTime, linkContext);  
+    return pongPacket;  
+}
 
   createPongPacket(pingPacket, currentTime) {
     // 使用非加密包，避免数据长度问题
@@ -861,21 +865,21 @@ export class PacketHandler {
       virtual_gateway: networkInfo.gateway,
       virtual_netmask: networkInfo.netmask,
       epoch: networkInfo.epoch,
-      // 过滤掉未完全初始化的客户端
-      device_info_list: Array.from(networkInfo.clients.values())
-        .filter((client) => client.virtual_ip !== 0 && client.online) // 只显示有效IP的在线客户端
-        .map((client) => ({
-          name: client.name,
-          virtual_ip: client.virtual_ip,
-          device_status: client.online ? 1 : 0,
-          client_secret: false,
-          client_secret_hash: new Uint8Array(0),
-          wireguard: false,
-        })),
-      public_ip: networkInfo.public_ip,
-      public_port: networkInfo.public_port,
-      public_ipv6: new Uint8Array(0),
-    };
+      // 过滤掉客户端
+      device_info_list: Array.from(networkInfo.clients.values())  
+      .filter((client) => client.virtual_ip !== 0 && client.virtual_ip !== virtualIp) // 排除本机  
+      .map((client) => ({  
+        name: client.name,  
+        virtual_ip: client.virtual_ip,  
+        device_status: client.online ? 1 : 0, // 离线显示为 0  
+        client_secret: false,  
+        client_secret_hash: new Uint8Array(0),  
+        wireguard: false,  
+      })),  
+    public_ip: networkInfo.public_ip,  
+    public_port: networkInfo.public_port,  
+    public_ipv6: new Uint8Array(0),  
+  };
 
     const responseBytes = this.encodeRegistrationResponse(responseData);
     const response = NetPacket.new(responseBytes.length);

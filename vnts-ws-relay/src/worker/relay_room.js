@@ -2,6 +2,7 @@ import { NetPacket } from "./core/packet.js";
 import { VntContext } from "./core/context.js";
 import { PacketHandler } from "./core/handler.js";
 import { PROTOCOL, TRANSPORT_PROTOCOL } from "./core/constants.js";
+import { parseVNTHeaderFast } from "./utils/fast_parser.js";
 
 export class RelayRoom {
   constructor(state, env) {
@@ -207,60 +208,120 @@ export class RelayRoom {
     // SERVICE 协议和部分 CONTROL 协议需要完整解析
     return protocol === 1 || (protocol === 3 && data[2] >= 3);
   }
-
+  async relayPacket(sourceClientId, data, header) {  
+  console.log(`[调试] 中继数据包从 ${sourceClientId} 到 ${header.destination}`);  
+    
+  // 检查是否禁用中继  
+  if (this.env.VNT_DISABLE_RELAY === "1") {  
+    console.log("[调试] 中继已禁用，丢弃数据包");  
+    return;  
+  }  
+  
+  // 获取源客户端的网络信息  
+  const sourceContext = this.contexts.get(sourceClientId);  
+  if (!sourceContext || !sourceContext.link_context) {  
+    console.log(`[调试] 源客户端 ${sourceClientId} 上下文不存在`);  
+    return;  
+  }  
+  
+  // 查找同一网络中的所有在线客户端  
+  const networkInfo = sourceContext.link_context.network_info;  
+  const targetClient = networkInfo.clients.get(header.destination);  
+    
+  if (targetClient && targetClient.online) {  
+    // 通过服务器中继到目标客户端  
+    for (const [clientId, server] of this.connections) {  
+      if (clientId === sourceClientId) continue;  
+        
+      const clientContext = this.contexts.get(clientId);  
+      if (clientContext &&   
+          clientContext.link_context &&  
+          clientContext.link_context.virtual_ip === header.destination) {  
+        try {  
+          server.send(data);  
+          console.log(`[调试] 数据包已中继到 ${clientId}`);  
+          break;  
+        } catch (error) {  
+          console.error(`[调试] 中继到 ${clientId} 失败:`, error);  
+        }  
+      }  
+    }  
+  } else {  
+    console.log(`[调试] 目标客户端 ${header.destination} 不在线或不存在`);  
+  }  
+}
   // 高性能消息处理
-  async handleMessage(clientId, data) {
-    try {
-      // 转换为 Uint8Array
-      let uint8Data;
-      if (data instanceof ArrayBuffer) {
-        uint8Data = new Uint8Array(data);
-      } else if (data instanceof Uint8Array) {
-        uint8Data = data;
-      } else {
-        console.warn(`[调试] 不支持的数据类型: ${typeof data}`);
-        return;
-      }
-
-      console.log(`[调试] 收到来自 ${clientId} 的数据`);
-      console.log(`[调试] 数据类型: ${typeof data}`);
-      console.log(`[调试] 数据长度: ${uint8Data.length}`);
-      console.log(
-        `[调试] 数据十六进制: ${Array.from(uint8Data)
-          .map((b) => b.toString(16).padStart(2, "0"))
-          .join("")}`
-      );
-
-      // 更新活动时间
-      this.updateLastActivity(clientId);
-
-      // 快速路径：直接转发常见数据包
-      if (this.shouldFastForward(uint8Data)) {
-        return await this.fastForward(clientId, uint8Data);
-      }
-
-      // 慢速路径：完整 VNT 协议解析
-      if (this.requiresFullParsing(uint8Data)) {
-        return await this.fullParsingPath(clientId, uint8Data);
-      }
-
-      // 中等路径：轻量级解析
-      const header = this.parseVNTHeader(uint8Data);
-      if (!header) {
-        console.error("[调试] VNT头部解析失败");
-        return;
-      }
-
-      console.log(
-        `[DEBUG] Parsed VNT header: protocol=${header.protocol}, transport=${header.transportProtocol}, source=${header.source}, dest=${header.destination}`
-      );
-
-      // 基于头部信息的简单路由
-      await this.headerBasedForward(clientId, uint8Data, header);
-    } catch (error) {
-      console.error(`[调试] 处理 ${clientId} 消息时出错:`, error);
-    }
-  }
+  async handleMessage(clientId, data) {  
+  try {  
+    // 确保数据是 Uint8Array  
+    let uint8Data;  
+    if (data instanceof ArrayBuffer) {  
+      uint8Data = new Uint8Array(data);  
+    } else if (data instanceof Uint8Array) {  
+      uint8Data = data;  
+    } else {  
+      console.warn(`[调试] 不支持的数据类型: ${typeof data}`);  
+      return;  
+    }  
+  
+    console.log(`[调试] 收到来自 ${clientId} 的数据`);  
+    console.log(`[调试] 数据长度: ${uint8Data.length}`);  
+  
+    // 更新活动时间  
+    this.updateLastActivity(clientId);  
+  
+    // 快速路径：解析 VNT 头部  
+    const header = parseVNTHeaderFast(uint8Data); // 使用导入的函数  
+      
+    if (!header) {  
+      // 头部解析失败，走完整解析路径  
+      console.log(`[调试] 头部解析失败，走完整解析路径`);  
+      return await this.fullParsingPath(clientId, uint8Data);  
+    }  
+  
+    // 数据包直接 0 拷贝转发  
+    if (header.isDataPacket) {  
+      const targetIp = header.destination;  
+      const targetClient = this.findClientByIp(targetIp);  
+        
+      if (targetClient && targetClient !== clientId) {  
+        // 0 拷贝：直接发送原始 buffer  
+        const server = this.connections.get(targetClient);  
+        if (server && server.readyState === WebSocket.OPEN) {  
+          server.send(uint8Data);  
+          return; // 转发完成，不需要继续处理  
+        }  
+      }  
+        
+      // 目标客户端不存在或离线，需要中继  
+      if (this.env.VNT_DISABLE_RELAY !== "1") {  
+        return await this.relayPacket(clientId, uint8Data, header);  
+      }  
+    }  
+  
+    // 控制包和服务包需要完整解析  
+    if (header.isControlPacket || header.isServicePacket) {  
+      console.log(`[调试] 检测到控制/服务包，走完整解析路径`);  
+      return await this.fullParsingPath(clientId, uint8Data);  
+    }  
+  
+    // 其他情况默认广播（保持兼容性）  
+    return await this.fastForward(clientId, uint8Data);  
+  } catch (error) {  
+    console.error(`[调试] 处理 ${clientId} 消息时出错:`, error);  
+  }  
+}  
+  
+// 辅助函数：根据 IP 查找客户端  
+findClientByIp(targetIp) {  
+  for (const [clientId, context] of this.contexts) {  
+    if (context.link_context &&   
+        context.link_context.virtual_ip === targetIp) {  
+      return clientId;  
+    }  
+  }  
+  return null;  
+}
 
   // 快速转发路径
   async fastForward(clientId, data) {
