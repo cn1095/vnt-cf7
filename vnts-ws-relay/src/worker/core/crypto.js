@@ -1,4 +1,5 @@
 import { ENCRYPTION_RESERVED } from "./constants.js";
+import { RsaWasm } from "./rsa_wasm.js";
 import { logger } from "./logger.js";
 
 /**
@@ -6,30 +7,48 @@ import { logger } from "./logger.js";
  * 基于 vnt_s/vnts/src/cipher/rsa_cipher.rs 实现
  */
 export class RsaCipher {
-  constructor(privateKeyDer, publicKeyDer) {
-    logger.debug(`[RSA加密器-初始化] 创建RSA加密器实例`);
-    this.privateKeyDer = privateKeyDer;
-    this.publicKeyDer = publicKeyDer;
-    this.finger = this.calculateFinger(publicKeyDer);
-    logger.debug(
-      `[RSA加密器-指纹] 公钥指纹计算完成: ${this.finger.substring(0, 16)}...`
-    );
+  constructor(privateKeyDer, publicKeyDer) {  
+    logger.debug(`[RSA加密器-初始化] 创建RSA加密器实例`);  
+    this.privateKeyDer = privateKeyDer;  
+    this.publicKeyDer = publicKeyDer;  
+    this.fingerValue = null;  
+    this.rsaWasm = new RsaWasm();  
+    this.initFinger(publicKeyDer);  
+    this.initRsaWasm();  
+  }  
+  
+  async initRsaWasm() {  
+    try {  
+      this.rsaWasm.set_private_key(this.privateKeyDer);  
+      logger.debug(`[RSA-WASM] WebAssembly RSA解密器初始化成功`);  
+    } catch (error) {  
+      logger.error(`[RSA-WASM] WebAssembly初始化失败: ${error.message}`);  
+    }  
+  }
+  
+  async initFinger(publicKeyDer) {  
+    this.fingerValue = await this.calculateFinger(publicKeyDer);  
+    logger.debug(  
+      `[RSA加密器-指纹] 公钥指纹计算完成: ${this.fingerValue.substring(0, 16)}...`  
+    );  
   }
 
   /**
    * 计算公钥指纹
    */
-  calculateFinger(publicKeyDer) {
-    // 使用 SHA256 计算指纹并返回 base64
-    const hashBuffer = crypto.subtle.digest("SHA-256", publicKeyDer);
-    return btoa(String.fromCharCode(...new Uint8Array(hashBuffer)));
+  async calculateFinger(publicKeyDer) {  
+    const hashBuffer = await crypto.subtle.digest("SHA-256", publicKeyDer);  
+    return btoa(String.fromCharCode(...new Uint8Array(hashBuffer)));  
   }
 
   /**
    * 获取指纹
    */
-  finger() {
-    return this.finger;
+  async finger() {  
+    if (this.fingerValue === null) {  
+      await this.fingerPromise;  
+    }  
+    return this.fingerValue;  
   }
 
   /**
@@ -43,56 +62,46 @@ export class RsaCipher {
    * RSA 解密
    * 基于 vnt_s/vnts/src/cipher/rsa_cipher.rs:116-148 实现
    */
-  async decrypt(netPacket) {
-    logger.debug(`[RSA解密-开始] 开始RSA解密操作`);
-    try {
-      // 导入私钥
-      logger.debug(`[RSA解密-密钥] 导入RSA私钥`);
-      const privateKey = await crypto.subtle.importKey(
-        "pkcs8",
-        this.privateKeyDer,
-        { name: "RSA-OAEP", hash: "SHA-256" },
-        false,
-        ["decrypt"]
-      );
+  async decrypt(netPacket) {  
+    logger.debug(`[RSA解密-开始] 开始RSA解密操作`);  
+    try {  
+      const payload = netPacket.payload();  
+      logger.debug(`[RSA解密-数据] 载荷长度: ${payload.length}字节`);  
+  
+      // 使用 WebAssembly 进行 PKCS1v15 解密  
+      logger.debug(`[RSA解密-WASM] 使用WebAssembly进行PKCS1v15解密`);  
+      const decryptedData = this.rsaWasm.decrypt_pkcs1v15(payload);  
+  
+      // 创建 RSA 密钥体  
+      logger.debug(`[RSA解密-密钥体] 构建RSA密钥体`);  
+      const secretBody = new RsaSecretBody(new Uint8Array(decryptedData));  
+  
+      // 构建 nonce  
+      const nonceRaw = this.buildNonceRaw(netPacket);  
+      logger.debug(`[RSA解密-验证] 构建nonce，长度: ${nonceRaw.length}字节`);  
+  
+      // 验证指纹  
+      logger.debug(`[RSA解密-指纹] 开始验证数据指纹`);  
+      const hasher = await crypto.subtle.digest(  
+        "SHA-256",  
+        new Uint8Array([...secretBody.body(), ...nonceRaw])  
+      );  
+      const hashArray = new Uint8Array(hasher);  
+      const expectedFinger = hashArray.slice(16);  
+  
+      if (!this.arraysEqual(expectedFinger, secretBody.finger())) {  
+        logger.error(`[RSA解密-错误] 指纹验证失败，数据可能被篡改`);  
+        throw new Error("finger err");  
+      }  
+        
+      logger.debug(`[RSA解密-成功] RSA解密完成，数据完整性验证通过`);  
+      return secretBody;  
+    } catch (error) {  
+      logger.error(`[RSA解密-失败] 解密过程异常: ${error.message}`);  
+      throw new Error(`decrypt failed ${error.message}`);  
+    }  
+  }  
 
-      // 解密数据
-      logger.debug(`[RSA解密-处理] 执行RSA-OAEP解密`);
-      const decryptedData = await crypto.subtle.decrypt(
-        { name: "RSA-OAEP" },
-        privateKey,
-        netPacket.payload()
-      );
-
-      // 创建 RSA 密钥体
-      logger.debug(`[RSA解密-密钥体] 构建RSA密钥体`);
-      const secretBody = new RsaSecretBody(new Uint8Array(decryptedData));
-
-      // 构建 nonce
-      const nonceRaw = this.buildNonceRaw(netPacket);
-      logger.debug(`[RSA解密-验证] 构建nonce，长度: ${nonceRaw.length}字节`);
-
-      // 验证指纹
-      logger.debug(`[RSA解密-指纹] 开始验证数据指纹`);
-      const hasher = await crypto.subtle.digest(
-        "SHA-256",
-        new Uint8Array([...secretBody.body(), ...nonceRaw])
-      );
-      const hashArray = new Uint8Array(hasher);
-      const expectedFinger = hashArray.slice(16);
-
-      if (!this.arraysEqual(expectedFinger, secretBody.finger())) {
-        logger.error(`[RSA解密-错误] 指纹验证失败，数据可能被篡改`);
-        throw new Error("finger err");
-      }
-      logger.debug(`[RSA解密-成功] RSA解密完成，数据完整性验证通过`);
-
-      return secretBody;
-    } catch (error) {
-      logger.error(`[RSA解密-失败] 解密过程异常: ${error.message}`);
-      throw new Error(`decrypt failed ${error.message}`);
-    }
-  }
 
   /**
    * RSA 加密
@@ -133,14 +142,14 @@ export class RsaCipher {
     const publicKey = await crypto.subtle.importKey(
       "spki",
       this.publicKeyDer,
-      { name: "RSA-OAEP", hash: "SHA-256" },
+      { name: "RSAES-PKCS1-v1_5" },
       false,
       ["encrypt"]
     );
 
-    logger.debug(`[RSA加密-处理] 执行RSA-OAEP加密`);
+    logger.debug(`[RSA加密-处理] 执行RSA-PKCS1v15加密`);
     const encryptedData = await crypto.subtle.encrypt(
-      { name: "RSA-OAEP" },
+      "RSAES-PKCS1-v1_5",
       publicKey,
       secretBody.buffer()
     );

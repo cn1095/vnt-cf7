@@ -21,6 +21,22 @@ export class RelayRoom {
 
     // 连接信息存储
     this.connectionInfos = new Map();
+    
+    // 初始化RSA密钥  
+    this.initializeRsaCipher();
+  }
+  async initializeRsaCipher() {  
+    try {  
+      // 从全局获取RSA密钥  
+      const { getGlobalRsaCipher } = await import("../worker.js");  
+      const rsaCipher = await getGlobalRsaCipher();  
+      if (rsaCipher) {  
+        this.packetHandler.setRsaCipher(rsaCipher);  
+        logger.info(`[RelayRoom-RSA] 使用全局RSA密钥`);  
+      }  
+    } catch (error) {  
+      logger.error(`[RelayRoom-RSA] 获取全局RSA密钥失败: ${error.message}`);  
+    }  
   }
   // 获取网关IP地址
   getGatewayIp(clientId) {
@@ -209,7 +225,7 @@ export class RelayRoom {
     const clientId = this.generateClientId();
     const addr = this.parseClientAddress(request);
 
-    logger.info(`新的WebSocket连接: ${clientId} 来自 ${JSON.stringify(addr)}`);
+    logger.info(`新的WebSocket连接: ${clientId} 请求者信息 ${JSON.stringify(addr)}`);
 
     // 创建 VNT 上下文
     const context = new VntContext({
@@ -682,7 +698,7 @@ export class RelayRoom {
         );
         return;
       }
-      logger.info(`开始广播数据包，来源客户端: ${clientId}`);
+      logger.debug(`开始广播数据包，来源客户端: ${clientId}`);
       await this.broadcastPacket(clientId, packet);
     }
   }
@@ -837,11 +853,12 @@ export class RelayRoom {
 
   parseClientAddress(request) {
     const cf = request.cf;
+    // logger.debug(`[地址解析-完整] Cloudflare CF对象: ${JSON.stringify(cf, null, 2)}`);
     const address = {
       ip: cf?.colo || "unknown",
       port: 0,
     };
-    logger.debug(`解析客户端地址: ${JSON.stringify(address)}`);
+    logger.debug(`解析请求者地址: ${JSON.stringify(address)}`);
     return address;
   }
 
