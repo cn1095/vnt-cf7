@@ -770,7 +770,8 @@ export class PacketHandler {
           requestedIp !== 0 ? this.formatIp(requestedIp) : "自动分配"
         }`
       );
-
+      const deviceId = registrationReq.device_id;
+      const allowIpChange = registrationReq.allow_ip_change || false;
       // 创建或获取网络信息
       logger.debug(
         `[注册-网络] 创建或获取网络信息，Token: ${registrationReq.token}`
@@ -780,16 +781,33 @@ export class PacketHandler {
         requestedIp
       );
 
-      // 分配虚拟 IP - 如果客户端指定了IP就直接使用，否则分配新的
-      const virtualIp =
-        requestedIp !== 0
-          ? requestedIp
-          : this.allocateVirtualIp(networkInfo, registrationReq.device_id);
-      logger.info(
-        `[注册-IP分配] 分配虚拟IP: ${this.formatIp(
-          virtualIp
-        )}, 网关: ${this.formatIp(networkInfo.gateway)}`
-      );
+      // 更新网段信息（如果是第一个客户端且指定了IP）
+      this.updateNetworkSegment(networkInfo, requestedIp, networkInfo.netmask);
+
+      let virtualIp = requestedIp;
+
+      // 检查IP冲突
+      if (requestedIp !== 0) {
+        const conflictCheck = this.checkIpConflict(
+          networkInfo,
+          requestedIp,
+          deviceId,
+          allowIpChange
+        );
+
+        if (!conflictCheck.canUse) {
+          virtualIp = 0; // 需要重新分配
+        }
+      }
+
+      // 分配虚拟IP
+      if (virtualIp === 0) {
+        virtualIp = this.allocateVirtualIp(
+          networkInfo,
+          deviceId,
+          allowIpChange
+        );
+      }
 
       // 创建客户端信息
       logger.debug(`[注册-客户端] 创建客户端信息对象`);
@@ -1061,14 +1079,27 @@ export class PacketHandler {
 
   // 计算客户端地址的方法
   calculateClientAddress(source) {
-    // 根据原始实现，客户端地址应该基于某种算法计算
-    // 这里暂时使用 source，但可能需要根据实际协议调整
-    return source;
+    logger.debug(
+      `[地址计算-开始] 计算客户端地址，源地址: ${JSON.stringify(source)}`
+    );
+
+    // 在WebSocket环境中，地址已经是从request.cf解析的
+    // 如果需要更复杂的地址处理，可以在这里添加
+    let clientAddress = source;
+
+    // 处理特殊情况（如果有的话）
+    if (!source || !source.ip) {
+      logger.warn(`[地址计算-警告] 无效的源地址，使用默认值`);
+      clientAddress = { ip: "unknown", port: 0 };
+    }
+
+    logger.debug(`[地址计算-完成] 计算结果: ${JSON.stringify(clientAddress)}`);
+    return clientAddress;
   }
 
   createErrorPacket(addr, destination, message) {
     try {
-      console.log(`[DEBUG] Creating error packet: ${message}`);
+      logger.debug(`[错误包-创建] 开始创建错误包: ${message}`);
 
       const errorPacket = NetPacket.new_encrypt(ENCRYPTION_RESERVED);
 
@@ -1084,12 +1115,12 @@ export class PacketHandler {
         ); // 限制长度
         errorPacket.set_payload(errorPayload);
       } catch (payloadError) {
-        console.warn(`[DEBUG] Failed to set error payload:`, payloadError);
+        logger.warn(`[错误包-警告] 设置错误载荷失败: ${payloadError.message}`);
       }
 
       return errorPacket;
     } catch (error) {
-      console.error("Failed to create error packet:", error);
+      logger.error(`[错误包-失败] 创建错误包失败: ${error.message}`, error);
       // 返回一个基本的错误包
       const fallbackPacket = NetPacket.new_encrypt(ENCRYPTION_RESERVED);
       fallbackPacket.set_protocol(PROTOCOL.ERROR);
@@ -1099,7 +1130,9 @@ export class PacketHandler {
   }
 
   createHandshakeResponse(request) {
-    const clientVersion = request.version || "cloudflare";
+    logger.debug(`[握手响应-开始] 开始创建握手响应`);
+    const clientVersion = request.version || "Unknown";
+    logger.debug(`[握手响应-版本] 客户端版本: ${clientVersion}`);
 
     const responseData = {
       version: clientVersion,
@@ -1107,6 +1140,7 @@ export class PacketHandler {
       public_key: new Uint8Array(0),
       key_finger: "",
     };
+    logger.debug(`[握手响应-数据] 构建响应数据`);
 
     const responseBytes = this.encodeHandshakeResponse(responseData);
 
@@ -1116,13 +1150,20 @@ export class PacketHandler {
     response.set_protocol(PROTOCOL.SERVICE);
     response.set_transport_protocol(TRANSPORT_PROTOCOL.HandshakeResponse);
     response.set_payload(responseBytes); // 这里应该正确工作
+    logger.debug(
+      `[握手响应-完成] 握手响应包创建完成，大小: ${responseBytes.length}字节`
+    );
 
     return response;
   }
 
   createRegistrationResponse(virtualIp, networkInfo) {
-    console.log(`[调试] 当前网络客户端数量: ${networkInfo.clients.size}`);
-    console.log(`[调试] 当前客户端IP: ${this.formatIp(virtualIp)}`);
+    logger.info(
+      `[注册响应-开始] 创建注册响应包，客户端IP: ${this.formatIp(virtualIp)}`
+    );
+    logger.debug(
+      `[注册响应-网络] 当前网络客户端数量: ${networkInfo.clients.size}`
+    );
 
     // 明确添加网关信息
     const gatewayInfo = {
@@ -1133,6 +1174,11 @@ export class PacketHandler {
       client_secret_hash: new Uint8Array(0),
       wireguard: false,
     };
+    logger.debug(
+      `[注册响应-网关] 网关信息创建完成，IP: ${this.formatIp(
+        networkInfo.gateway
+      )}`
+    );
 
     // 客户端信息列表（排除本机）
     const clientInfoList = Array.from(networkInfo.clients.values())
@@ -1147,6 +1193,9 @@ export class PacketHandler {
         client_secret_hash: new Uint8Array(0),
         wireguard: false,
       }));
+    logger.debug(
+      `[注册响应-客户端] 过滤后客户端数量: ${clientInfoList.length}`
+    );
 
     // 将网关信息放在第一位
     const deviceInfoList = [gatewayInfo, ...clientInfoList];
@@ -1161,6 +1210,9 @@ export class PacketHandler {
       public_port: networkInfo.public_port,
       public_ipv6: new Uint8Array(0),
     };
+    logger.debug(
+      `[注册响应-数据] 响应数据构建完成，epoch: ${networkInfo.epoch}`
+    );
 
     const responseBytes = this.encodeRegistrationResponse(responseData);
     const response = NetPacket.new(responseBytes.length);
@@ -1175,44 +1227,63 @@ export class PacketHandler {
     response.first_set_ttl(15);
 
     response.set_payload(responseBytes);
+    logger.info(
+      `[注册响应-完成] 注册响应包创建完成，大小: ${responseBytes.length}字节`
+    );
 
     return response;
   }
 
   // 协议解析方法
   parseHandshakeRequest(payload) {
+    logger.debug(
+      `[协议解析-握手] 开始解析握手请求，载荷长度: ${payload.length}`
+    );
     const { parseHandshakeRequest } = require("./protos.js");
     try {
-      return parseHandshakeRequest(payload);
+      const result = parseHandshakeRequest(payload);
+      logger.debug(`[协议解析-握手] 握手请求解析成功`);
+      return result;
     } catch (error) {
-      console.error("Failed to parse handshake request:", error);
+      logger.error(`[协议解析-握手] 握手请求解析失败: ${error.message}`, error);
       throw new Error("Invalid handshake request format");
     }
   }
 
   parseRegistrationRequest(payload) {
+    logger.debug(
+      `[协议解析-注册] 开始解析注册请求，载荷长度: ${payload.length}`
+    );
     const { parseRegistrationRequest } = require("./protos.js");
     try {
-      return parseRegistrationRequest(payload);
+      const result = parseRegistrationRequest(payload);
+      logger.debug(`[协议解析-注册] 注册请求解析成功`);
+      return result;
     } catch (error) {
-      console.error("Failed to parse registration request:", error);
+      logger.error(`[协议解析-注册] 注册请求解析失败: ${error.message}`, error);
       throw new Error("Invalid registration request format");
     }
   }
 
   encodeHandshakeResponse(data) {
+    logger.debug(`[协议编码-握手] 开始编码握手响应`);
     const { createHandshakeResponse } = require("./protos.js");
-    return createHandshakeResponse(
+    const result = createHandshakeResponse(
       data.version,
       data.secret,
       data.public_key,
       data.key_finger
     );
+    logger.debug(
+      `[协议编码-握手] 握手响应编码完成，大小: ${result.length}字节`
+    );
+    return result;
   }
 
   encodeRegistrationResponse(data) {
+    logger.debug(`[协议编码-注册] 开始编码注册响应`);
     const { createRegistrationResponse } = require("./protos.js");
-    return createRegistrationResponse(
+    const result = createRegistrationResponse(
       data.virtual_ip,
       data.virtual_gateway,
       data.virtual_netmask,
@@ -1221,14 +1292,22 @@ export class PacketHandler {
       data.public_ip,
       data.public_port
     );
+    logger.debug(
+      `[协议编码-注册] 注册响应编码完成，大小: ${result.length}字节`
+    );
+    return result;
   }
 
   validateRegistrationRequest(request) {
+    logger.debug(`[请求验证-注册] 开始验证注册请求参数`);
     if (
       !request.token ||
       request.token.length === 0 ||
       request.token.length > 128
     ) {
+      logger.error(
+        `[请求验证-注册] Token长度无效: ${request.token?.length || 0}`
+      );
       throw new Error("Invalid token length");
     }
     if (
@@ -1236,6 +1315,9 @@ export class PacketHandler {
       request.device_id.length === 0 ||
       request.device_id.length > 128
     ) {
+      logger.error(
+        `[请求验证-注册] 设备ID长度无效: ${request.device_id?.length || 0}`
+      );
       throw new Error("Invalid device_id length");
     }
     if (
@@ -1243,16 +1325,24 @@ export class PacketHandler {
       request.name.length === 0 ||
       request.name.length > 128
     ) {
+      logger.error(
+        `[请求验证-注册] 设备名称长度无效: ${request.name?.length || 0}`
+      );
       throw new Error("Invalid name length");
     }
+    logger.debug(`[请求验证-注册] 注册请求验证通过`);
   }
 
   parseIpv4(ipStr) {
     if (!ipStr || typeof ipStr !== "string") {
+      logger.debug(`[地址解析-IPv4] 无效的IP字符串: ${ipStr}`);
       return 0;
     }
     const parts = ipStr.split(".").map(Number);
-    return (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3];
+    const result =
+      (parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3];
+    logger.debug(`[地址解析-IPv4] IP地址转换: ${ipStr} -> ${result}`);
+    return result;
   }
 
   isBroadcast(addr) {
@@ -1260,14 +1350,25 @@ export class PacketHandler {
   }
 
   generateRandomKey() {
+    logger.debug(`[密钥生成-随机] 开始生成32字节随机密钥`);
     const array = new Uint8Array(32);
     crypto.getRandomValues(array);
+    logger.debug(`[密钥生成-随机] 随机密钥生成完成`);
     return array;
   }
 
   // 网络管理方法
   getOrCreateNetworkInfo(token, requestedIp = 0) {
+    logger.debug(
+      `[网络信息-查询] 查询或创建网络信息，Token: ${token}, 请求IP: ${
+        requestedIp !== 0 ? this.formatIp(requestedIp) : "自动分配"
+      }`
+    );
+
+    let networkInfo;
+
     if (!this.cache.networks.has(token)) {
+      logger.info(`[网络信息-创建] Token不存在，创建新网络`);
       let gateway = 0x0a240001; // 默认 10.36.0.1
       let network = 0x0a240001; // 默认 10.36.0.0
       let netmask = 0xffffff00; // 255.255.255.0
@@ -1275,19 +1376,26 @@ export class PacketHandler {
       // 如果第一个客户端指定了IP，根据其更新网段
       if (requestedIp !== 0) {
         network = requestedIp & netmask;
-        console.log(
-          `[DEBUG] 客户端网段更新: 网关=${this.formatIp(
+        logger.info(
+          `[网络信息-网段] 客户端指定了IP，更新网段 - 网关: ${this.formatIp(
             gateway
-          )}, 网络=${this.formatIp(network)}`
+          )}, 网络: ${this.formatIp(network)}`
         );
       }
 
-      this.cache.networks.set(
-        token,
-        new NetworkInfo(network, netmask, gateway)
-      );
+      networkInfo = new NetworkInfo(network, netmask, gateway);
+      this.cache.networks.set(token, networkInfo);
+      logger.debug(`[网络信息-存储] 网络信息已缓存，Token: ${token}`);
+    } else {
+      networkInfo = this.cache.networks.get(token);
     }
-    return this.cache.networks.get(token);
+
+    logger.debug(
+      `[网络信息-完成] 返回网络信息 - 网关: ${this.formatIp(
+        networkInfo.gateway
+      )}, 掩码: ${this.formatIp(networkInfo.netmask)}`
+    );
+    return networkInfo;
   }
 
   // 辅助方法：格式化 IP 地址用于日志
@@ -1297,44 +1405,167 @@ export class PacketHandler {
     }.${ipUint32 & 0xff}`;
   }
 
-  allocateVirtualIp(networkInfo, deviceId) {
-    // 简单的 IP 分配策略：从 10.0.0.2 开始分配
-    const baseIp = (networkInfo.network & 0xffffff00) + 2;
-    let currentIp = baseIp;
+  allocateVirtualIp(networkInfo, deviceId, allowIpChange = false) {
+    logger.debug(`[IP分配-开始] 开始分配虚拟IP，设备ID: ${deviceId}`);
 
-    while (networkInfo.clients.has(currentIp)) {
-      currentIp++;
-      // 防止超出子网范围
-      if ((currentIp & 0xff) > 254) {
-        throw new Error("No available IP addresses");
+    const gateway = networkInfo.gateway;
+    const netmask = networkInfo.netmask;
+    const network = networkInfo.network;
+
+    // 使用组网实际的网段计算IP分配范围
+    const ipRangeStart = network + 1;
+    const ipRangeEnd = network | ~netmask;
+
+    logger.debug(
+      `[IP分配-范围] IP分配范围: ${this.formatIp(
+        ipRangeStart
+      )} - ${this.formatIp(ipRangeEnd)}`
+    );
+
+    let virtualIp = 0;
+    let insert = true;
+
+    // 1. 检查设备ID重用 - 查找上一次使用的IP
+    logger.debug(`[IP分配-重用] 检查设备ID重用: ${deviceId}`);
+    for (const [ip, client] of networkInfo.clients) {
+      if (client.device_id === deviceId) {
+        virtualIp = ip;
+        insert = false;
+        logger.info(
+          `[IP分配-重用] 找到设备之前使用的IP: ${this.formatIp(virtualIp)}`
+        );
+        break;
       }
     }
 
-    return currentIp;
+    // 2. 如果没有重用IP，分配新的IP
+    if (virtualIp === 0) {
+      logger.debug(`[IP分配-新分配] 设备ID首次连接，分配新IP`);
+
+      // 从小到大找一个未使用的IP
+      for (let ip = ipRangeStart; ip <= ipRangeEnd; ip++) {
+        // 跳过网关地址
+        if (ip === gateway) {
+          logger.debug(`[IP分配-跳过] 跳过网关地址: ${this.formatIp(ip)}`);
+          continue;
+        }
+
+        // 跳过任何网段的.1地址
+        const hostPart = ip & !netmask;
+        if (hostPart === 1) {
+          logger.debug(`[IP分配-跳过] 跳过网段.1地址: ${this.formatIp(ip)}`);
+          continue;
+        }
+
+        // 检查IP是否已被占用
+        if (!networkInfo.clients.has(ip)) {
+          virtualIp = ip;
+          logger.info(`[IP分配-成功] 分配新IP: ${this.formatIp(virtualIp)}`);
+          break;
+        }
+      }
+    }
+
+    // 3. 检查是否找到可用IP
+    if (virtualIp === 0) {
+      logger.error(`[IP分配-失败] 地址池已用尽，无法分配IP`);
+      throw new Error("No available IP addresses");
+    }
+
+    logger.debug(`[IP分配-完成] IP分配完成: ${this.formatIp(virtualIp)}`);
+    return virtualIp;
+  }
+
+  /**
+   * 更新网络信息 - 支持第一个客户端更新网段
+   */
+  updateNetworkSegment(networkInfo, requestedIp, netmask) {
+    if (networkInfo.clients.size === 0 && requestedIp !== 0) {
+      const actualNetwork = requestedIp & netmask;
+      const oldNetwork = networkInfo.network;
+
+      if (actualNetwork !== oldNetwork) {
+        networkInfo.network = actualNetwork;
+        logger.info(
+          `[网段-更新] 网段已更新: ${this.formatIp(
+            oldNetwork
+          )} -> ${this.formatIp(actualNetwork)}`
+        );
+      }
+    }
+  }
+
+  /**
+   * 检查IP冲突并处理
+   */
+  checkIpConflict(networkInfo, virtualIp, deviceId, allowIpChange) {
+    if (virtualIp === 0) return { canUse: true, needReallocate: false };
+
+    // 检查是否为网关地址
+    if (virtualIp === networkInfo.gateway) {
+      logger.warn(
+        `[IP冲突-网关] 请求的IP为网关地址: ${this.formatIp(virtualIp)}`
+      );
+      throw new Error("Cannot use gateway address");
+    }
+
+    // 检查IP是否已被占用
+    const existingClient = networkInfo.clients.get(virtualIp);
+    if (existingClient) {
+      if (existingClient.device_id !== deviceId) {
+        // IP被其他设备占用
+        if (!allowIpChange) {
+          logger.warn(
+            `[IP冲突-占用] IP已被其他设备占用: ${this.formatIp(virtualIp)} by ${
+              existingClient.device_id
+            }`
+          );
+          throw new Error("IP already exists");
+        } else {
+          logger.info(
+            `[IP冲突-重新分配] IP被占用，允许重新分配: ${this.formatIp(
+              virtualIp
+            )}`
+          );
+          return { canUse: false, needReallocate: true };
+        }
+      } else {
+        // 同一设备重用IP
+        logger.debug(
+          `[IP冲突-重用] 同一设备重用IP: ${this.formatIp(virtualIp)}`
+        );
+        return { canUse: true, needReallocate: false };
+      }
+    }
+
+    return { canUse: true, needReallocate: false };
   }
   validatePacket(packet) {
+    logger.debug(`[数据包验证-开始] 开始验证VNT数据包`);
     const buffer = packet.buffer();
 
     // 修复：确保转换为 ArrayBuffer
     let arrayBuffer;
     if (buffer instanceof ArrayBuffer) {
       arrayBuffer = buffer;
+      logger.debug(`[数据包验证-缓冲区] 缓冲区已是ArrayBuffer类型`);
     } else if (buffer.buffer) {
       arrayBuffer = buffer.buffer;
+      logger.debug(`[数据包验证-缓冲区] 从Uint8Array获取ArrayBuffer`);
     } else {
       arrayBuffer = buffer.buffer.slice(
         buffer.byteOffset,
         buffer.byteOffset + buffer.byteLength
       );
+      logger.debug(`[数据包验证-缓冲区] 切片创建ArrayBuffer`);
     }
 
     const view = new DataView(arrayBuffer);
 
-    console.log(
-      `[DEBUG] Complete packet hex:`,
-      Array.from(buffer)
+    logger.debug(
+      `[数据包验证-十六进制] 完整数据包: ${Array.from(buffer)
         .map((b) => b.toString(16).padStart(2, "0"))
-        .join("")
+        .join("")}`
     );
 
     // 验证地址字段
@@ -1351,7 +1582,17 @@ export class PacketHandler {
       view.getUint8(11),
     ];
 
-    console.log(`[DEBUG] Packet source: [${sourceBytes.join(", ")}]`);
-    console.log(`[DEBUG] Packet dest: [${destBytes.join(", ")}]`);
+    logger.debug(
+      `[数据包验证-源地址] 源地址: [${sourceBytes.join(
+        ", "
+      )}] -> ${this.formatIp(sourceIp)}`
+    );
+    logger.debug(
+      `[数据包验证-目标地址] 目标地址: [${destBytes.join(
+        ", "
+      )}] -> ${this.formatIp(destIp)}`
+    );
+
+    logger.debug(`[数据包验证-完成] 数据包验证完成`);
   }
 }

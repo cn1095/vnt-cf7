@@ -125,12 +125,15 @@ export function createRegistrationRequest(
   virtualIp,
   clientSecretHash
 ) {
+  if (!token) {
+    throw new Error("Token is required for registration");
+  }
   const message = {
-    token: token || "default",
+    token: token,
     device_id: deviceId || "",
-    name: name || "client",
+    name: name || "客户端",
     is_fast: false,
-    version: version || "1.0.0",
+    version: version || "Unknown",
     virtual_ip: virtualIp || 0,
     allow_ip_change: false,
     client_secret: false,

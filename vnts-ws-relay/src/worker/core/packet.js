@@ -1,4 +1,5 @@
 import { PACKET_HEADER_SIZE, ENCRYPTION_RESERVED } from "./constants.js";
+import { logger } from "./logger.js";
 
 export class NetPacket {
   constructor(data) {
@@ -6,15 +7,25 @@ export class NetPacket {
     this.offset = 0;
   }
 
-  // 新增：轻量级头部解析方法
+  // 轻量级头部解析方法
   static parseHeader(buffer) {
+    logger.debug(
+      `[数据包解析-头部] 开始解析VNT头部，缓冲区长度: ${buffer?.length || 0}`
+    );
+
     if (!buffer || buffer.length < 12) {
+      logger.warn(
+        `[数据包解析-头部] 数据包长度不足，需要至少12字节，实际: ${
+          buffer?.length || 0
+        }`
+      );
       throw new Error("Packet too short for header parsing");
     }
 
     const view = new DataView(buffer.buffer || buffer);
+    logger.debug(`[数据包解析-头部] 创建DataView完成，开始提取字段`);
 
-    return {
+    const header = {
       version: view.getUint8(0) & 0x0f,
       flags: (view.getUint8(0) & 0xf0) >> 4,
       protocol: view.getUint8(1),
@@ -24,16 +35,23 @@ export class NetPacket {
       destination: view.getUint32(8, false), // 大端序
       offset: 12,
     };
+
+    logger.debug(
+      `[数据包解析-头部] 解析完成 - 版本: ${header.version}, 协议: ${header.protocol}, 传输: ${header.transportProtocol}`
+    );
+    return header;
   }
 
   // 保留完整解析方法用于复杂协议处理
   static parse(buffer) {
     // 安全检查：确保输入有效
     if (!buffer) {
+      logger.error(`[数据包解析-完整] 缓冲区为空或未定义`);
       throw new Error("Buffer is null or undefined");
     }
 
     if (!(buffer instanceof Uint8Array) && !(buffer instanceof ArrayBuffer)) {
+      logger.error(`[数据包解析-完整] 无效的缓冲区类型: ${typeof buffer}`);
       throw new Error(
         "Invalid buffer type: expected Uint8Array or ArrayBuffer"
       );
@@ -44,6 +62,9 @@ export class NetPacket {
       buffer instanceof Uint8Array ? buffer.length : buffer.byteLength;
 
     if (length < 12) {
+      logger.error(
+        `[数据包解析-完整] 数据包过短: ${length}字节，最少需要12字节`
+      );
       throw new Error(
         `Packet too short: ${length} bytes, minimum 12 bytes required`
       );
@@ -54,6 +75,7 @@ export class NetPacket {
       packet.parseHeader();
       return packet;
     } catch (error) {
+      logger.error(`[数据包解析-完整] 解析失败: ${error.message}`, error);
       throw new Error(`Failed to parse VNT packet: ${error.message}`);
     }
   }
@@ -61,6 +83,7 @@ export class NetPacket {
   parseHeader() {
     // 安全检查：确保数据存在且类型正确
     if (!this.data) {
+      logger.error(`[协议头解析-错误] 数据包数据为空`);
       throw new Error("Packet data is null or undefined");
     }
 
@@ -75,6 +98,7 @@ export class NetPacket {
     } else if (this.data instanceof ArrayBuffer) {
       buffer = this.data;
     } else {
+      logger.error(`[协议头解析-错误] 无效的数据类型`);
       throw new Error(
         "Invalid data type for packet parsing: expected Uint8Array or ArrayBuffer"
       );
@@ -82,6 +106,9 @@ export class NetPacket {
 
     // 安全检查：确保缓冲区足够大以包含协议头
     if (buffer.byteLength < 12) {
+      logger.warn(
+        `[协议头解析-警告] 数据包长度不足，需要至少12字节，实际: ${buffer.byteLength}`
+      );
       throw new Error(
         "Packet too short: minimum 12 bytes required for VNT header"
       );
@@ -121,6 +148,10 @@ export class NetPacket {
 
       this.offset = 12; // VNT header size
     } catch (error) {
+      logger.error(
+        `[协议头解析-失败] 解析VNT协议头失败: ${error.message}`,
+        error
+      );
       throw new Error(`Failed to parse VNT packet header: ${error.message}`);
     }
   }
@@ -149,11 +180,13 @@ export class NetPacket {
   incr_ttl() {
     // 安全检查：确保数据存在
     if (!this.data) {
+      logger.error(`[TTL递增-错误] 数据包数据为空`);
       throw new Error("Cannot increment TTL: packet data is null");
     }
 
     // 确保 TTL 值有效
     if (typeof this.ttl !== "number" || this.ttl < 0) {
+      logger.error(`[TTL递增-错误] TTL值无效: ${this.ttl}`);
       throw new Error("Invalid TTL value");
     }
 
@@ -170,11 +203,13 @@ export class NetPacket {
     } else if (this.data instanceof ArrayBuffer) {
       buffer = this.data;
     } else {
+      logger.error(`[TTL递增-错误] 无效的数据类型`);
       throw new Error("Invalid data type for packet modification");
     }
 
     // 安全检查：确保缓冲区足够大
     if (buffer.byteLength < 4) {
+      logger.error(`[TTL递增-错误] 缓冲区太短，无法修改TTL`);
       throw new Error("Packet too short to modify TTL");
     }
 
@@ -183,6 +218,7 @@ export class NetPacket {
       view.setUint8(3, this.ttl); // TTL 在字节3
       return this.ttl;
     } catch (error) {
+      logger.error(`[TTL递增-失败] 写入TTL失败: ${error.message}`, error);
       throw new Error(`Failed to increment TTL: ${error.message}`);
     }
   }
@@ -236,6 +272,7 @@ export class NetPacket {
   // 安全获取 ArrayBuffer 的辅助方法
   _getArrayBuffer() {
     if (!this.data) {
+      logger.error(`[缓冲区-错误] 数据包数据为空`);
       throw new Error("Packet data is null");
     }
 
@@ -248,6 +285,7 @@ export class NetPacket {
     } else if (this.data instanceof ArrayBuffer) {
       return this.data;
     } else {
+      logger.error(`[缓冲区-错误] 无效的数据类型`);
       throw new Error("Invalid data type");
     }
   }
@@ -255,22 +293,27 @@ export class NetPacket {
   // 验证数据包完整性
   validate() {
     if (!this.data) {
+      logger.error(`[数据包-错误] 数据包数据为空`);
       throw new Error("Packet data is null");
     }
 
     if (typeof this.protocol !== "number") {
+      logger.error(`[数据包-错误] 协议字段无效: ${this.protocol}`);
       throw new Error("Invalid protocol field");
     }
 
     if (typeof this.transportProtocol !== "number") {
+      logger.error(`[数据包-错误] 传输协议字段无效: ${this.transportProtocol}`);
       throw new Error("Invalid transport protocol field");
     }
 
     if (typeof this.source !== "number" || this.source < 0) {
+      logger.error(`[数据包-错误] 源地址无效: ${this.source}`);
       throw new Error("Invalid source address");
     }
 
     if (typeof this.destination !== "number" || this.destination < 0) {
+      logger.error(`[数据包-错误] 目标地址无效: ${this.destination}`);
       throw new Error("Invalid destination address");
     }
 
@@ -310,7 +353,7 @@ export class NetPacket {
     // 使用正确的字节顺序和偏移
     const destBytes = this.intToIpv4Bytes(destination);
 
-    console.log(`[DEBUG] Setting destination bytes: [${destBytes.join(", ")}]`);
+    logger.debug(`[目标地址-字节] 目标地址字节: [${destBytes.join(", ")}]`);
 
     // 按字节设置，确保与 Rust 一致
     view.setUint8(8, destBytes[0]);
@@ -324,6 +367,11 @@ export class NetPacket {
   set_payload(payload) {
     const dataStart = 12; // VNT header size
     if (this.data.length < dataStart + payload.length) {
+      logger.error(
+        `[载荷-错误] 缓冲区空间不足，需要: ${
+          dataStart + payload.length
+        }，可用: ${this.data.length}`
+      );
       throw new Error("Insufficient space for payload");
     }
 
@@ -373,15 +421,15 @@ export class NetPacket {
   }
 
   first_set_ttl(ttl) {
-    console.log(`[调试] first_set_ttl 被调用，ttl=${ttl}`);
+    logger.debug(`[TTL-设置] 首次设置TTL: ${ttl}`);
 
     const buffer = this._getArrayBuffer();
     const view = new DataView(buffer);
 
     // 记录修改前的值
     const oldValue = view.getUint8(3);
-    console.log(
-      `[调试] TTL字节修改前: 0x${oldValue.toString(16).padStart(2, "0")}`
+    logger.debug(
+      `[TTL-修改前] TTL字节修改前: 0x${oldValue.toString(16).padStart(2, "0")}`
     );
 
     // 设置 TTL
@@ -389,8 +437,8 @@ export class NetPacket {
     view.setUint8(3, newValue);
 
     // 记录修改后的值
-    console.log(
-      `[调试] TTL字节修改后: 0x${newValue.toString(16).padStart(2, "0")}`
+    logger.debug(
+      `[TTL-修改后] TTL字节修改后: 0x${newValue.toString(16).padStart(2, "0")}`
     );
 
     this.ttl = ttl;
