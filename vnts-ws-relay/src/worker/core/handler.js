@@ -16,13 +16,15 @@ import { AesGcmCipher, randomU64String } from "./crypto.js";
 import { logger } from "./logger.js";
 
 export class PacketHandler {
-  constructor(env) {
+  constructor(env, relayRoom = null) { 
     this.env = env;
+    this.relayRoom = relayRoom;
     this.cache = new AppCache();
     this.cache.networks = new Map();
     this.cachedEpoch = 0;
     this.lastEpochUpdate = 0;
     this.rsaCipher = null;
+    this.currentNetworkInfo = null;
     // 如果配置了服务端加密，生成RSA密钥对
     if (env.SERVER_ENCRYPT === "true") {
       this.initializeRsaCipher();
@@ -695,25 +697,35 @@ export class PacketHandler {
 
     return response;
   }
-  async notifyClientsUpdate(networkInfo, newClientIp, newClientInfo) {
-    const updatePacket = this.createDeviceUpdatePacket(networkInfo, newClientInfo);
-
-    // 向所有已连接的客户端发送更新
-    for (const [ip, client] of networkInfo.clients) {
-      if (ip !== newClientIp && client.tcp_sender) {
-        try {
-          await client.tcp_sender.send(updatePacket.buffer().to_vec());
-        } catch (error) {
-          logger.error(
-            `[客户端列表更新] 通知客户端 ${this.formatIp(ip)} 失败: ${
-              error.message
-            }`,
-            error
-          );
-        }
-      }
-    }
-  }
+  async notifyClientsUpdate(networkInfo, newClientIp, newClientInfo) {  
+    const updatePacket = this.createDeviceUpdatePacket(networkInfo, newClientInfo);  
+  
+    // 向所有已连接的客户端发送更新  
+    for (const [ip, client] of networkInfo.clients) {  
+        if (ip !== newClientIp && client.online) {  
+            try {  
+                // 通过 RelayRoom 的 connections Map 获取实际的 WebSocket  
+                if (this.relayRoom && this.relayRoom.connections) {  
+                    for (const [clientId, ws] of this.relayRoom.connections) {  
+                        const context = this.relayRoom.contexts.get(clientId);  
+                        if (context && context.link_context &&   
+                            context.link_context.virtual_ip === ip) {  
+                            await ws.send(updatePacket.buffer());  
+                            break;  
+                        }  
+                    }  
+                }  
+            } catch (error) {  
+                logger.error(  
+                    `[客户端列表更新] 通知客户端 ${this.formatIp(ip)} 失败: ${  
+                        error.message  
+                    }`,  
+                    error  
+                );  
+            }  
+        }  
+    }  
+}
 
   async handleRegistration(context, packet, addr, tcpSender) {
     // logger.info(`[注册-开始] 处理客户端注册请求，来源: ${JSON.stringify(addr)}`);
@@ -752,6 +764,38 @@ export class PacketHandler {
 
       // 更新网段信息（如果是第一个客户端且指定了IP）
       this.updateNetworkSegment(networkInfo, requestedIp, networkInfo.netmask);
+      
+      // 新增：检查设备ID是否已被其他IP使用  
+        const existingDeviceWithSameId = this.findDeviceById(networkInfo, deviceId);  
+        if (existingDeviceWithSameId && existingDeviceWithSameId.online) {  
+            if (requestedIp !== 0 && existingDeviceWithSameId.virtual_ip !== requestedIp) {  
+                // 设备ID已被其他IP占用，且请求的IP不同  
+                logger.warn(  
+                    `[ID冲突-已占用] 设备ID ${deviceId} 已被IP ${this.formatIp(existingDeviceWithSameId.virtual_ip)} 占用`  
+                );  
+                return this.createDeviceIdAlreadyInUsePacket(addr, packet.source, existingDeviceWithSameId.virtual_ip);  
+            }  
+        }  
+  
+        // 新增：检查IP是否已被其他设备ID使用  
+        if (requestedIp !== 0) {  
+            const existingClient = networkInfo.clients.get(requestedIp);  
+            if (existingClient && existingClient.online) {  
+                if (existingClient.device_id !== deviceId) {  
+                    // IP被其他设备ID占用  
+                    logger.warn(  
+                        `[IP冲突-其他设备] IP ${this.formatIp(requestedIp)} 被其他设备 ${existingClient.device_id} 占用`  
+                    );  
+                    return this.createIpAlreadyInUsePacket(addr, packet.source, requestedIp);  
+                } else if (existingClient.device_id === deviceId) {  
+                    // 相同设备ID和IP，且在线，返回已被使用错误  
+                    logger.warn(  
+                        `[IP冲突-已占用] IP ${this.formatIp(requestedIp)} 已被设备 ${deviceId} 占用`  
+                    );  
+                    return this.createIpAlreadyInUsePacket(addr, packet.source, requestedIp);  
+                }  
+            }  
+        }
 
       let virtualIp = requestedIp;
 
@@ -826,6 +870,48 @@ export class PacketHandler {
       return this.createErrorPacket(addr, packet.source, "Registration failed");
     }
   }
+  
+  // 根据设备ID查找客户端  
+findDeviceById(networkInfo, deviceId) {  
+    for (const [ip, client] of networkInfo.clients) {  
+        if (client.device_id === deviceId && client.online) {  
+            return client;  
+        }  
+    }  
+    return null;  
+}  
+  
+// 创建IP已被使用的错误响应包  
+createIpAlreadyInUsePacket(addr, source, requestedIp) {  
+    const errorPayload = new TextEncoder().encode(  
+        `IP ${this.formatIp(requestedIp)} is already in use`  
+    );  
+    const errorPacket = NetPacket.new_encrypt(ENCRYPTION_RESERVED);  
+      
+    errorPacket.set_protocol(PROTOCOL.SERVICE);  
+    errorPacket.set_transport_protocol(TRANSPORT_PROTOCOL.ErrorResponse);  
+    errorPacket.set_source(source);  
+    errorPacket.set_destination(0xffffffff);  
+    errorPacket.set_payload(errorPayload);  
+      
+    return errorPacket;  
+}  
+  
+// 创建设备ID已被使用的错误响应包  
+createDeviceIdAlreadyInUsePacket(addr, source, existingIp) {  
+    const errorPayload = new TextEncoder().encode(  
+        `Device ID is already in use with IP ${this.formatIp(existingIp)}`  
+    );  
+    const errorPacket = NetPacket.new_encrypt(ENCRYPTION_RESERVED);  
+      
+    errorPacket.set_protocol(PROTOCOL.SERVICE);  
+    errorPacket.set_transport_protocol(TRANSPORT_PROTOCOL.ErrorResponse);  
+    errorPacket.set_source(source);  
+    errorPacket.set_destination(0xffffffff);  
+    errorPacket.set_payload(errorPayload);  
+      
+    return errorPacket;  
+}  
 
   getCachedEpoch() {
     if (!this.cachedEpoch || Date.now() - this.lastEpochUpdate > 5000) {
@@ -961,7 +1047,7 @@ export class PacketHandler {
         // 发送到特定客户端
         // logger.debug(`[数据包转发-发送] 找到目标客户端，开始发送数据包`);
         try {
-          await targetClient.tcp_sender.send(packet.buffer().to_vec());
+          await targetClient.tcp_sender.send(packet.buffer());
           // logger.debug(`[数据包转发-成功] 数据包已成功发送到 ${this.formatIp(destination)}`);
         } catch (error) {
           logger.error(
@@ -987,7 +1073,7 @@ export class PacketHandler {
       if (client.virtual_ip !== sender && client.online && client.tcp_sender) {
         try {
           // logger.debug(`[广播包-发送] 向客户端 ${this.formatIp(virtualIp)} 发送广播包`);
-          await client.tcp_sender.send(packet.buffer().to_vec());
+          await client.tcp_sender.send(packet.buffer());
         } catch (error) {
           // logger.error(`[广播包-失败] 广播到 ${this.formatIp(virtualIp)} 失败: ${error.message}`,error);
           client.online = false;
@@ -1002,7 +1088,7 @@ export class PacketHandler {
     const targetClient = linkContext.network_info.clients.get(destination);
     if (targetClient && targetClient.online && targetClient.tcp_sender) {
       try {
-        await targetClient.tcp_sender.send(packet.buffer().to_vec());
+        await targetClient.tcp_sender.send(packet.buffer());
       } catch (error) {
         // logger.error(`[目标转发-失败] 转发到 ${this.formatIp(destination)} 失败: ${error.message}`,error);
         targetClient.online = false;
@@ -1108,10 +1194,7 @@ export class PacketHandler {
       `[注册响应-开始] 创建注册响应包，客户端IP: ${this.formatIp(virtualIp)}`
     );
     // logger.debug(`[注册响应-网络] 当前网络客户端数量: ${networkInfo.clients.size}`);
-logger.info(  
-    `[注册响应-网关Hash] 网关使用客户端Hash: ${Array.from(clientInfo.client_secret_hash || new Uint8Array(0))  
-      .map(b => b.toString(16).padStart(2, '0')).join('')}`  
-  ); 
+// logger.info(`[注册响应-网关Hash] 网关使用客户端Hash: ${Array.from(clientInfo.client_secret_hash || new Uint8Array(0)).map(b => b.toString(16).padStart(2, '0')).join('')}`); 
     // 明确添加网关信息
     const gatewayInfo = {
       name: "服务器",

@@ -23,6 +23,8 @@ export const TRANSPORT_PROTOCOL = {
   PunchResponse: 4,
   AddrRequest: 5, // 从 2 改为 5
   AddrResponse: 6, // 从 3 改为 6
+  
+  ErrorResponse: 10,
 };
 
 export const IP_TURN_TRANSPORT_PROTOCOL = {

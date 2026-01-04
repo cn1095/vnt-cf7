@@ -144,7 +144,11 @@ export class VntContext {
           // logger.debug(`[连接清理-状态] 更新客户端状态为离线: ${this.link_context.virtual_ip}`);
           clientInfo.online = false;
           clientInfo.tcp_sender = null;
+          clientInfo.offline_timestamp = Date.now(); // 记录离线时间 
           networkInfo.epoch += 1;
+          logger.info(  
+                    `[客户端离线] 设备 ${clientInfo.name} (${clientInfo.device_id}) IP ${this.formatIp(this.link_context.virtual_ip)} 已标记为离线`  
+                );
         }
 
         // 插入 IP 会话记录，设置1天过期
@@ -156,6 +160,13 @@ export class VntContext {
     }
     // logger.debug(`[连接清理-完成] 客户端连接资源清理完成`);
   }
+}
+
+// 格式化IP 
+function formatIp(ipUint32) {  
+    return `${(ipUint32 >>> 24) & 0xff}.${(ipUint32 >>> 16) & 0xff}.${
+        (ipUint32 >>> 8) & 0xff
+    }.${ipUint32 & 0xff}`;
 }
 
 /**
@@ -244,11 +255,15 @@ export class AppCache {
         if (
           clientInfo &&
           !clientInfo.online &&
-          clientInfo.address === address
+          clientInfo.address === address &&  
+          clientInfo.offline_timestamp &&  
+          (Date.now() - clientInfo.offline_timestamp) >= 24 * 3600 * 1000
         ) {
           networkInfo.clients.delete(ip);
           networkInfo.epoch += 1;
-          // logger.debug(`[应用缓存-会话] 客户端过期并移除: ${ip} (组: ${group})`);
+          logger.info(  
+                    `[客户端清理] 设备 ${clientInfo.name} (${clientInfo.device_id}) IP ${this.formatIp(ip)} 离线超过1天，已清理`  
+                );
         }
       }
     });

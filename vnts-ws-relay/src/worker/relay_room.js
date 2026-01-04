@@ -13,7 +13,7 @@ export class RelayRoom {
     this.contexts = new Map();
     this.p2p_connections = new Map();
     this.connection_last_update = new Map();
-    this.packetHandler = new PacketHandler(env);
+    this.packetHandler = new PacketHandler(env, this);
 
     // 心跳管理
     this.heartbeatTimers = new Map();
@@ -736,46 +736,91 @@ if (url.pathname === wsPath) {
     return shouldForward;
   }
 
-  handleClose(clientId) {
-    logger.info(`开始清理连接: ${clientId}`);
-
-    const context = this.contexts.get(clientId);
-
-    if (context) {
-      try {
-        // logger.debug(`清理 ${clientId} 的上下文`);
-        this.packetHandler.leave(context);
-      } catch (error) {
-        logger.error(`清理 ${clientId} 上下文时出错:`, error);
-      }
-    }
-
-    // 清理心跳定时器
-    const heartbeatId = this.heartbeatTimers.get(clientId);
-    if (heartbeatId) {
-      logger.debug(`停止 ${clientId} 的心跳定时器`);
-      clearInterval(heartbeatId);
-      this.heartbeatTimers.delete(clientId);
-    }
-
-    // 清理连接和上下文
-    this.contexts.delete(clientId);
-    this.connections.delete(clientId);
-
-    // 清理连接信息
-    if (this.connectionInfos) {
-      this.connectionInfos.delete(clientId);
-    }
-
-    // 如果没有活跃连接了，停止健康检查
-    if (this.connections.size === 0 && this.healthCheckInterval) {
-      clearInterval(this.healthCheckInterval);
-      this.healthCheckInterval = null;
-      logger.info(`所有连接已断开，停止健康检查定时器`);
-    }
-
-    logger.info(`连接 ${clientId} 清理完成`);
-  }
+  handleClose(clientId) {  
+    logger.info(`开始清理连接: ${clientId}`);  
+  
+    const context = this.contexts.get(clientId);  
+  
+    if (context) {  
+        try {  
+            // 获取网络信息用于通知  
+            let networkInfo = null;  
+            let disconnectedIp = null;  
+              
+            if (context.link_context) {  
+                networkInfo = context.link_context.network_info;  
+                disconnectedIp = context.link_context.virtual_ip;  
+            }  
+              
+            // 清理上下文（仅标记离线，不删除）  
+            this.packetHandler.leave(context);  
+              
+            // 通知其他客户端有设备离线  
+            if (networkInfo && disconnectedIp) {  
+                const disconnectedClient = networkInfo.clients.get(disconnectedIp);  
+                if (disconnectedClient) {  
+                    // 创建设备列表更新包（包含离线设备）  
+                    const updatePacket = this.packetHandler.createDeviceUpdatePacket(  
+                        networkInfo,   
+                        disconnectedClient  
+                    );  
+                      
+                    // 通知其他在线客户端  
+                    for (const [ip, client] of networkInfo.clients) {  
+                        if (ip !== disconnectedIp && client.online) {  
+                            try {  
+                                // 查找对应的 WebSocket 连接  
+                                for (const [cid, ws] of this.connections) {  
+                                    const ctx = this.contexts.get(cid);  
+                                    if (ctx && ctx.link_context &&   
+                                        ctx.link_context.virtual_ip === ip) {  
+                                        ws.send(updatePacket.buffer().to_vec());  
+                                        break;  
+                                    }  
+                                }  
+                            } catch (error) {  
+                                logger.error(  
+                                    `[客户端离线通知] 通知客户端 ${this.formatIp(ip)} 失败: ${  
+                                        error.message  
+                                    }`,  
+                                    error  
+                                );  
+                            }  
+                        }  
+                    }  
+                }  
+            }  
+        } catch (error) {  
+            logger.error(`清理 ${clientId} 上下文时出错:`, error);  
+        }  
+    }  
+  
+    // 清理心跳定时器  
+    const heartbeatId = this.heartbeatTimers.get(clientId);  
+    if (heartbeatId) {  
+        logger.debug(`停止 ${clientId} 的心跳定时器`);  
+        clearInterval(heartbeatId);  
+        this.heartbeatTimers.delete(clientId);  
+    }  
+  
+    // 清理连接和上下文  
+    this.contexts.delete(clientId);  
+    this.connections.delete(clientId);  
+  
+    // 清理连接信息  
+    if (this.connectionInfos) {  
+        this.connectionInfos.delete(clientId);  
+    }  
+  
+    // 如果没有活跃连接了，停止健康检查  
+    if (this.connections.size === 0 && this.healthCheckInterval) {  
+        clearInterval(this.healthCheckInterval);  
+        this.healthCheckInterval = null;  
+        logger.info(`所有连接已断开，停止健康检查定时器`);  
+    }  
+  
+    logger.info(`连接 ${clientId} 清理完成`);  
+}
 
   generateClientId() {
     const clientId = Math.random().toString(36).substr(2, 9);
